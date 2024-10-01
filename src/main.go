@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -13,7 +14,18 @@ func main() {
 		log.Fatal("missing path to world dir")
 	}
 
-	inDir := args[1]
+	worldPath := args[1]
 
-	fmt.Printf("inDir: %s\n", inDir)
+	fmt.Printf("worldPath: %s\n", worldPath)
+
+	levelDatPath := filepath.Join(worldPath, "level.dat")
+
+	f, err := os.Open(levelDatPath)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	ParseNBT(f)
+
 }
