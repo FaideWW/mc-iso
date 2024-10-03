@@ -415,7 +415,7 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 		// working with a slice, we need to allocate a new one with the correct
 		// size
 		buf := val
-		if vk == reflect.Slice {
+		if vk != reflect.Array {
 			buf = reflect.MakeSlice(vt, int(arrayLen), int(arrayLen))
 		}
 		for i := 0; i < int(arrayLen); i++ {
@@ -426,7 +426,7 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 			buf.Index(i).SetInt(int64(value))
 		}
 
-		if vt.Kind() == reflect.Slice {
+		if vk != reflect.Array {
 			val.Set(buf)
 		}
 
@@ -570,6 +570,8 @@ func (d *NBTDecoder) ReadTagHeader() (byte, string, error) {
 		err = fmt.Errorf("nbt: unknown tag %#02x - possibly reading a compressed gzip stream", tagType)
 	case 0x78: // zlib magic header
 		err = fmt.Errorf("nbt: unknown tag %#02x - possibly reading a compressed zlib stream", tagType)
+	case TAG_End:
+		// TAG_End does not have a tagname, so do nothing
 	default:
 		tagName, err = d.ReadString()
 	}
