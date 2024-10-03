@@ -2,7 +2,9 @@ package main
 
 import (
 	"compress/gzip"
+	"compress/zlib"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +14,11 @@ import (
 
 type Level struct {
 	Data LevelData `nbt:"Data"`
+}
+
+type VersionData struct {
+	Id   int    `nbt:"Id"`
+	Name string `nbt:"Name"`
 }
 
 type LevelData struct {
@@ -26,6 +33,13 @@ type LevelData struct {
 	BorderWarningBlocks  float64 `nbt:"BorderWarningBlocks"`
 	BorderWarningTime    float64 `nbt:"BorderWarningTime"`
 	ClearWeatherTime     int     `nbt:"ClearWeatherTime"`
+
+	LevelName string      `nbt:"LevelName"`
+	SpawnX    int         `nbt:"SpawnX"`
+	SpawnY    int         `nbt:"SpawnY"`
+	SpawnZ    int         `nbt:"SpawnZ"`
+	Version   VersionData `nbt:"Version"`
+	WasModded bool        `nbt:"WasModded"`
 }
 
 func main() {
@@ -47,9 +61,29 @@ func main() {
 	}
 	defer f.Close()
 
-	decompressed, err := gzip.NewReader(f)
+	isCompressed, err := nbt.CheckCompression(f)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	var decompressed io.Reader
+
+	switch isCompressed {
+	case nbt.Uncompressed:
+		fmt.Printf("file is uncompressed\n")
+		decompressed = f
+	case nbt.Gzip:
+		fmt.Printf("using gzip compression\n")
+		decompressed, err = gzip.NewReader(f)
+		if err != nil {
+			log.Fatal(err)
+		}
+	case nbt.Zlib:
+		fmt.Printf("using zlib compression\n")
+		decompressed, err = zlib.NewReader(f)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	decoder := nbt.NewDecoder(decompressed)
