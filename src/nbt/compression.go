@@ -1,6 +1,8 @@
 package nbt
 
 import (
+	"compress/gzip"
+	"compress/zlib"
 	"fmt"
 	"io"
 )
@@ -10,6 +12,11 @@ const (
 	Gzip
 	Zlib
 )
+
+type DecompressibleReader = interface {
+	io.ReaderAt
+	io.Reader
+}
 
 // Peeks the first byte in the reader to check for
 // compression headers. Returns 0 if uncompressed, or a
@@ -35,4 +42,27 @@ func CheckCompression(r io.ReaderAt) (int, error) {
 	default: // either not an NBT file, or an unrecognized compression format
 		return -1, fmt.Errorf("unrecognized first byte %#02x - either not an NBT file, or an unsupported compression format", buf[0])
 	}
+}
+
+func Decompress(r DecompressibleReader) (io.Reader, error) {
+	isCompressed, err := CheckCompression(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var decompressed io.Reader
+
+	switch isCompressed {
+	case Uncompressed:
+		decompressed = r
+	case Gzip:
+		decompressed, err = gzip.NewReader(r)
+	case Zlib:
+		decompressed, err = zlib.NewReader(r)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return decompressed, nil
 }

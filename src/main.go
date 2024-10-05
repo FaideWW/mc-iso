@@ -1,15 +1,13 @@
 package main
 
 import (
-	"compress/gzip"
-	"compress/zlib"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/faideww/mc-iso/src/nbt"
+	"github.com/faideww/mc-iso/src/region"
 )
 
 type Level struct {
@@ -55,35 +53,15 @@ func main() {
 
 	levelDatPath := filepath.Join(worldPath, "level.dat")
 
-	f, err := os.Open(levelDatPath)
+	levelFile, err := os.Open(levelDatPath)
 	if err != nil {
 		panic(err)
 	}
-	defer f.Close()
+	defer levelFile.Close()
 
-	isCompressed, err := nbt.CheckCompression(f)
+	decompressed, err := nbt.Decompress(levelFile)
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	var decompressed io.Reader
-
-	switch isCompressed {
-	case nbt.Uncompressed:
-		fmt.Printf("file is uncompressed\n")
-		decompressed = f
-	case nbt.Gzip:
-		fmt.Printf("using gzip compression\n")
-		decompressed, err = gzip.NewReader(f)
-		if err != nil {
-			log.Fatal(err)
-		}
-	case nbt.Zlib:
-		fmt.Printf("using zlib compression\n")
-		decompressed, err = zlib.NewReader(f)
-		if err != nil {
-			log.Fatal(err)
-		}
 	}
 
 	decoder := nbt.NewDecoder(decompressed)
@@ -97,4 +75,46 @@ func main() {
 	fmt.Printf("parsed level.dat - top level tagname: %q\n", name)
 	fmt.Printf("%+v\n", result)
 
+	regionFilePath := filepath.Join(worldPath, "region/r.0.0.mca")
+	regionFile, err := os.Open(regionFilePath)
+	if err != nil {
+		panic(err)
+	}
+	defer regionFile.Close()
+
+	reg, err := region.NewRegion(regionFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("successfully parsed region\n")
+	// fmt.Printf("example chunk 0: %+v\n", region.Chunks[0])
+
+	for i, s := range reg.Chunks[0].Sections {
+		fmt.Printf("section %d Y: %d\n", i, s.Y)
+	}
+
+	debugPrintChunkSection(reg.Chunks[0].Sections[0])
+}
+
+func debugPrintChunkSection(s region.Section) {
+	fmt.Printf("section Y: %d\n", s.Y)
+	fmt.Printf("biome palette (size:%d): %+v\n", len(s.Biomes.Palette), s.Biomes.Palette)
+	fmt.Printf("block palette (size:%d): %+v\n", len(s.BlockStates.Palette), s.BlockStates.Palette)
+	fmt.Printf("block data size:%d\n", len(s.BlockStates.Data))
+	if region.IntPow(2, 4) > len(s.BlockStates.Palette) {
+		fmt.Printf("index size: 4bit - %d bytes\n", (4*4096)/8)
+	}
+
+	fmt.Printf("palette indices: [ ")
+	for i := 0; i < 4096; i++ {
+		idx, err := s.BlockStates.Index(i, true)
+		if err != nil {
+			log.Fatal(err)
+		}
+		block := s.BlockStates.Palette[idx].Name
+		fmt.Printf("%s ", block)
+	}
+	fmt.Printf("]\n")
+
+	// fmt.Printf("palette data (size:%d elems, %d bytes): %+v\n", len(s.BlockStates.Data), len(s.BlockStates.Data)*8, s.BlockStates.Data)
 }

@@ -188,53 +188,89 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 			return fmt.Errorf("can't unmarshal TAG_Double into go type %q", vk.String())
 		}
 	case TAG_Byte_Array:
+		// arrayLen, err := d.ReadInt32()
+		// if err != nil {
+		// 	return err
+		// }
+		// if arrayLen < 0 {
+		// 	return errors.New("can't unmarshal TAG_Byte_Array with negative length")
+		// }
+
+		// byteArray := make([]byte, arrayLen)
+		// if _, err := io.ReadFull(d.r, byteArray); err != nil {
+		// 	return err
+		// }
+
+		// vt := val.Type()
+		// if vt == reflect.TypeOf(byteArray) {
+		// 	// if v is a byte slice, we're done
+		// 	val.SetBytes(byteArray)
+		// } else if vt.Kind() == reflect.Slice {
+		// 	// if v is a slice of non-bytes, try to convert element-wise to the correct type
+		// 	switch elem := vt.Elem(); elem.Kind() {
+		// 	case reflect.Int8, reflect.Uint8:
+		// 		length := int(arrayLen)
+		// 		// if the slice's capacity is too small to fit the full array, allocate a new one
+		// 		if val.Cap() < length {
+		// 			val.Set(reflect.MakeSlice(vt, length, length))
+		// 		}
+
+		// 		val.SetLen(length)
+		// 		switch elem.Kind() {
+		// 		case reflect.Int8:
+		// 			for i := 0; i < length; i++ {
+		// 				val.Index(i).Set(reflect.ValueOf(int8(byteArray[i])))
+		// 			}
+		// 		case reflect.Uint8:
+		// 			for i := 0; i < length; i++ {
+		// 				// bytes are already uint8s, so no need to cast
+		// 				val.Index(i).Set(reflect.ValueOf(byteArray[i]))
+		// 			}
+		// 		}
+		// 	default:
+		// 		return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", elem.String())
+		// 	}
+		// } else if vt.Kind() == reflect.Interface {
+		// 	// if v is an interface, just assign it to byteArray
+		// 	val.Set(reflect.ValueOf(byteArray))
+		// } else {
+		// 	return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", vt.String())
+		// }
+
 		arrayLen, err := d.ReadInt32()
 		if err != nil {
 			return err
 		}
-		if arrayLen < 0 {
-			return errors.New("can't unmarshal TAG_Byte_Array with negative length")
-		}
-
-		byteArray := make([]byte, arrayLen)
-		if _, err := io.ReadFull(d.r, byteArray); err != nil {
-			return err
-		}
 
 		vt := val.Type()
-		if vt == reflect.TypeOf(byteArray) {
-			// if v is a byte slice, we're done
-			val.SetBytes(byteArray)
-		} else if vt.Kind() == reflect.Slice {
-			// if v is a slice of non-bytes, try to convert element-wise to the correct type
-			switch elem := vt.Elem(); elem.Kind() {
-			case reflect.Int8, reflect.Uint8:
-				length := int(arrayLen)
-				// if the slice's capacity is too small to fit the full array, allocate a new one
-				if val.Cap() < length {
-					val.Set(reflect.MakeSlice(vt, length, length))
-				}
+		vk := vt.Kind()
+		if vk == reflect.Interface {
+			vt = reflect.TypeOf([]byte{})
+		} else if vk == reflect.Array && vt.Len() != int(arrayLen) {
+			return fmt.Errorf("can't unmarshal TAG_Byte_Array into %q - length does not match", vt.String())
+		} else if vk != reflect.Slice && vk != reflect.Array {
+			return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", vt.String())
+		} else if ek := vt.Elem().Kind(); ek != reflect.Uint8 && ek != reflect.Int8 {
+			return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", vt.String())
+		}
 
-				val.SetLen(length)
-				switch elem.Kind() {
-				case reflect.Int8:
-					for i := 0; i < length; i++ {
-						val.Index(i).Set(reflect.ValueOf(int8(byteArray[i])))
-					}
-				case reflect.Uint8:
-					for i := 0; i < length; i++ {
-						// bytes are already uint8s, so no need to cast
-						val.Index(i).Set(reflect.ValueOf(byteArray[i]))
-					}
-				}
-			default:
-				return fmt.Errorf("can't unmarshal TAG_Double into go type %q", elem.String())
+		// if we're working with an array, we can write directly to it. if we're
+		// working with a slice, we need to allocate a new one with the correct
+		// size
+		buf := val
+		if vk != reflect.Array {
+			buf = reflect.MakeSlice(vt, int(arrayLen), int(arrayLen))
+		}
+		for i := 0; i < int(arrayLen); i++ {
+			byte, err := d.r.ReadByte()
+			if err != nil {
+				return err
 			}
-		} else if vt.Kind() == reflect.Interface {
-			// if v is an interface, just assign it to byteArray
-			val.Set(reflect.ValueOf(byteArray))
-		} else {
-			return fmt.Errorf("can't unmarshal TAG_Double into go type %q", vt.String())
+			buf.Index(i).Set(reflect.ValueOf(byte))
+		}
+
+		if vk != reflect.Array {
+			val.Set(buf)
 		}
 
 	case TAG_String:
@@ -345,9 +381,12 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 						// wrap error so we know where it's coming from
 						return fmt.Errorf("failed to decode field %q in TAG_Compound: %w", fieldTagName, err)
 					}
-				} else if err := d.ReadAndDiscardTag(fieldTagType); err != nil {
-					// if we can't find a field to write the tag to, discard it
-					return err
+				} else {
+					// fmt.Printf("no matching struct field found for tagname %q (type %#02x) - discarding\n", fieldTagName, fieldTagType)
+					if err := d.ReadAndDiscardTag(fieldTagType); err != nil {
+						// if we can't find a field to write the tag to, discard it
+						return err
+					}
 				}
 			}
 
@@ -441,11 +480,11 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 		if vk == reflect.Interface {
 			vt = reflect.TypeOf([]int64{})
 		} else if vk == reflect.Array && vt.Len() != int(arrayLen) {
-			return fmt.Errorf("can't unmarshal TAG_Int_Array into %q - length does not match", vt.String())
+			return fmt.Errorf("can't unmarshal TAG_Long_Array into %q - length does not match", vt.String())
 		} else if vk != reflect.Slice && vk != reflect.Array {
-			return fmt.Errorf("can't unmarshal TAG_Int_Array into go type %q", vt.String())
+			return fmt.Errorf("can't unmarshal TAG_Long_Array into go type %q", vt.String())
 		} else if ek := vt.Elem().Kind(); ek != reflect.Int64 {
-			return fmt.Errorf("can't unmarshal TAG_Int_Array into go type %q", vt.String())
+			return fmt.Errorf("can't unmarshal TAG_Long_Array into go type %q", vt.String())
 		}
 
 		// if we're working with an array, we can write directly to it. if we're
