@@ -188,55 +188,6 @@ func (d *NBTDecoder) unmarshal(val reflect.Value, tagType byte) error {
 			return fmt.Errorf("can't unmarshal TAG_Double into go type %q", vk.String())
 		}
 	case TAG_Byte_Array:
-		// arrayLen, err := d.ReadInt32()
-		// if err != nil {
-		// 	return err
-		// }
-		// if arrayLen < 0 {
-		// 	return errors.New("can't unmarshal TAG_Byte_Array with negative length")
-		// }
-
-		// byteArray := make([]byte, arrayLen)
-		// if _, err := io.ReadFull(d.r, byteArray); err != nil {
-		// 	return err
-		// }
-
-		// vt := val.Type()
-		// if vt == reflect.TypeOf(byteArray) {
-		// 	// if v is a byte slice, we're done
-		// 	val.SetBytes(byteArray)
-		// } else if vt.Kind() == reflect.Slice {
-		// 	// if v is a slice of non-bytes, try to convert element-wise to the correct type
-		// 	switch elem := vt.Elem(); elem.Kind() {
-		// 	case reflect.Int8, reflect.Uint8:
-		// 		length := int(arrayLen)
-		// 		// if the slice's capacity is too small to fit the full array, allocate a new one
-		// 		if val.Cap() < length {
-		// 			val.Set(reflect.MakeSlice(vt, length, length))
-		// 		}
-
-		// 		val.SetLen(length)
-		// 		switch elem.Kind() {
-		// 		case reflect.Int8:
-		// 			for i := 0; i < length; i++ {
-		// 				val.Index(i).Set(reflect.ValueOf(int8(byteArray[i])))
-		// 			}
-		// 		case reflect.Uint8:
-		// 			for i := 0; i < length; i++ {
-		// 				// bytes are already uint8s, so no need to cast
-		// 				val.Index(i).Set(reflect.ValueOf(byteArray[i]))
-		// 			}
-		// 		}
-		// 	default:
-		// 		return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", elem.String())
-		// 	}
-		// } else if vt.Kind() == reflect.Interface {
-		// 	// if v is an interface, just assign it to byteArray
-		// 	val.Set(reflect.ValueOf(byteArray))
-		// } else {
-		// 	return fmt.Errorf("can't unmarshal TAG_Byte_Array into go type %q", vt.String())
-		// }
-
 		arrayLen, err := d.ReadInt32()
 		if err != nil {
 			return err

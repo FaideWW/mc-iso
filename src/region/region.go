@@ -60,7 +60,8 @@ func NewRegion(r io.ReadSeeker) (Region, error) {
 	// Finally, the chunk payload.
 	// Each chunk begins with a 5-byte header:
 	// - 4 bytes describing the (unpadded) length of the chunk data in bytes
-	// - 1 byte describing the compression type
+	// - 1 byte describing the compression type (practically, these are 1=gzip, 2=zlib, 3=uncompressed)
+	// Following the header is an NBT TAG_Compound, compressed as described in the header
 	for i := 0; i < 1024; i++ {
 		if region.locTable[i].offset == 0 && region.locTable[i].size == 0 {
 			// if both offset and size are 0, there is no chunk in this location

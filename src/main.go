@@ -8,6 +8,7 @@ import (
 
 	"github.com/faideww/mc-iso/src/nbt"
 	"github.com/faideww/mc-iso/src/region"
+	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 type Level struct {
@@ -117,4 +118,17 @@ func debugPrintChunkSection(s region.Section) {
 	fmt.Printf("]\n")
 
 	// fmt.Printf("palette data (size:%d elems, %d bytes): %+v\n", len(s.BlockStates.Data), len(s.BlockStates.Data)*8, s.BlockStates.Data)
+
+	rl.InitWindow(800, 450, "raylib [core] example - basic window")
+	defer rl.CloseWindow()
+
+	rl.SetTargetFPS(60)
+
+	for !rl.WindowShouldClose() {
+		rl.BeginDrawing()
+		rl.ClearBackground(rl.RayWhite)
+		rl.DrawText("Congrats! you created your first window!", 190, 200, 20, rl.LightGray)
+		rl.EndDrawing()
+	}
+
 }

@@ -27,7 +27,7 @@ type Palette[T any] struct {
 	Palette []T     `nbt:"palette"`
 	Data    []int64 `nbt:"data"`
 
-	bitpackSize int // cached value of the size of the palette index (see Index())
+	indexSize int // cached value of the size of the palette index (see Index())
 }
 
 type PaletteData struct {
@@ -54,45 +54,46 @@ const (
 // need to be to store the entire palette. eg. if the palette has 15 entries,
 // the indices will be 4 bits wide. if the palette has 17 entries, the indices
 // will be 5 bits wide, and so on.
-//
-// (additional note: as of MC 1.16, these entries are aligned to the int64
-// boundaries; meaning that they will only pack into one int64 as many full
-// indexes as will fit, or floor(64/indexSize). prior to 1.16 (DataVersion
-// 2556?) they were packed across multiple elements, presumably)
 func (p Palette[T]) Index(i int, useNewPacking bool) (int64, error) {
 	if len(p.Data) == 0 {
 		return 0, nil
 	}
-	var bitpackSize int
-	if p.bitpackSize == 0 {
+
+	// memoize the index size so we don't have to keep re-calculating it for each index
+	var indexSize int
+	if p.indexSize == 0 {
 		paletteSize := len(p.Palette)
-		bitpackSize = bitSize(paletteSize - 1)
-		p.bitpackSize = bitpackSize
+		indexSize = bitSize(paletteSize - 1)
+		p.indexSize = indexSize
 	} else {
-		bitpackSize = p.bitpackSize
+		indexSize = p.indexSize
 	}
 
-	// fmt.Printf("index size: %d\n", bitpackSize)
-
+	// as of MC 1.16, these entries are aligned to the int64 boundaries; meaning
+	// that they will only pack into one int64 as many full indexes as will fit,
+	// or floor(64/indexSize).
+	// prior to 1.16 (DataVersion 2556?) they were packed across multiple
+	// elements, so we will need a different unpacking scheme for these values (TODO)
 	if !useNewPacking {
 		return -1, errors.New("Old palette packing scheme not yet supported")
 	}
 
-	bitIndex := i * bitpackSize
+	bitIndex := i * indexSize
 
+	// find the element in the long data we need to look at, and the offset into
+	// that entry
 	longDataIndex := bitIndex / 64
-	longDataOffset := (bitIndex % 64) / bitpackSize
+	longDataOffset := (bitIndex % 64) / indexSize
 
-	// fmt.Printf("long index: %d (%d)\n", longDataIndex, p.Data[longDataIndex])
-	// fmt.Printf("long offset: %d\n", longDataOffset)
-	// bit hacking time
-	rshift := 64 - (longDataOffset + bitpackSize)
-	mask := IntPow(2, bitpackSize) - 1
+	// to extract the index from the long data, which is stored bit-wise as
+	// longBits[n:n+indexSize], we right-shift the entry to drop all the bits to
+	// the right, and then bitwise-AND with a masking value to drop bits to the
+	// left
+	rshift := 64 - (longDataOffset + indexSize)
+	mask := IntPow(2, indexSize) - 1
 
-	// fmt.Printf("shift right by %d bits - mask: %d\n", rshift, mask)
 	result := (p.Data[longDataIndex] >> int64(rshift)) & int64(mask)
 
-	// fmt.Printf("result: %d\n", result)
 	return result, nil
 }
 
