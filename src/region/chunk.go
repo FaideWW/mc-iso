@@ -52,14 +52,14 @@ const (
 // Returns the palette entry at index i, or an error if i is out of bounds
 // Palette indices are packed in such a way that they are only as large as they
 // need to be to store the entire palette. eg. if the palette has 15 entries,
-// the indices will be 4 bits wide. if the palette has 17 entries, the indices
-// will be 5 bits wide, and so on.
+// the indices will be 4 bits wide (2^4=16). if the palette has 17 entries, the indices
+// will be 5 bits wide (2^5=32), and so on.
 func (p Palette[T]) Index(i int, useNewPacking bool) (int64, error) {
 	if len(p.Data) == 0 {
 		return 0, nil
 	}
 
-	// memoize the index size so we don't have to keep re-calculating it for each index
+	// TODO: memoize the index size so we don't have to keep re-calculating it for each index
 	var indexSize int
 	if p.indexSize == 0 {
 		paletteSize := len(p.Palette)

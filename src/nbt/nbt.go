@@ -25,7 +25,8 @@ const (
 	TAG_Long_Array
 )
 
-// NBT decoder and unmarshaler.
+// NBT decoder and unmarshaler. Replicates the encoding/json interface but for
+// reading NBT structures.
 // Heavily inspired by Tnze/go-mc and encoding/json
 
 type NBTReader = interface {

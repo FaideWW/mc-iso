@@ -42,6 +42,7 @@ func NewRegion(r io.ReadSeeker) (Region, error) {
 	}
 
 	for i := 0; i < 1024; i++ {
+		// Each location is 4 bytes long; the first 3 bytes are the offset, and the 4th byte is the size.
 		offset := i * 4
 
 		region.locTable[i].offset = uint32(buf[offset])<<16 | uint32(buf[offset+1])<<8 | uint32(buf[offset+2])
