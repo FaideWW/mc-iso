@@ -1,2 +1,4 @@
 .DS_Store
 raylib.dll
+.env*
+main.exe

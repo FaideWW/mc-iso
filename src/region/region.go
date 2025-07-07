@@ -108,7 +108,27 @@ func NewRegion(r io.ReadSeeker) (Region, error) {
 
 		c.Loaded = true
 
+		for j, s := range c.Sections {
+			// Post-processing step: calculate and save the size of each palette index
+			s.BlockStates.IndexSize = s.BlockStates.GetIndexSize()
+			s.Biomes.IndexSize = s.Biomes.GetIndexSize()
+
+			// Post-processing step; for each section in the chunk, see if there
+			// is an air block in the palette. If there is, record its index so
+			// we can refer to it when generating meshes. If there are no air
+			// blocks in the section, airIdx will be -1
+			airIdx := -1
+			for i, entry := range s.BlockStates.Palette {
+				if entry.Name == "minecraft:air" {
+					airIdx = i
+				}
+			}
+			s.BlockStates.AirIdx = int64(airIdx)
+			c.Sections[j] = s
+		}
+
 		region.Chunks[i] = c
+
 	}
 	return region, nil
 }

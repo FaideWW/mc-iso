@@ -3,9 +3,9 @@ package block
 import "encoding/json"
 
 type Vec3 struct {
-	x float32
-	y float32
-	z float32
+	X float32
+	Y float32
+	Z float32
 }
 
 func (v *Vec3) UnmarshalJSON(data []byte) error {
@@ -14,18 +14,18 @@ func (v *Vec3) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	v.x = values[0]
-	v.y = values[1]
-	v.z = values[2]
+	v.X = values[0]
+	v.Y = values[1]
+	v.Z = values[2]
 
 	return nil
 }
 
 type Rect struct {
-	x1 float32
-	y1 float32
-	x2 float32
-	y2 float32
+	X1 float32
+	Y1 float32
+	X2 float32
+	Y2 float32
 }
 
 func (r *Rect) UnmarshalJSON(data []byte) error {
@@ -34,10 +34,10 @@ func (r *Rect) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	r.x1 = values[0]
-	r.y1 = values[1]
-	r.x2 = values[2]
-	r.y2 = values[3]
+	r.X1 = values[0]
+	r.Y1 = values[1]
+	r.X2 = values[2]
+	r.Y2 = values[3]
 
 	return nil
 }

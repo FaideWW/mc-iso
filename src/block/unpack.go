@@ -4,16 +4,14 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
-
-	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 type BlockAssets struct {
 	BlockStates map[string]BlockState
 	Models      map[string]BlockModel
-	Textures    map[string]rl.Texture2D
+	Textures    map[string]string
+	FileMap     map[string]*zip.File
 }
 
 // Extracts block states, block models, and textures from a minecraft client.jar. Returns an assets struct containing the extracted data.
@@ -21,11 +19,12 @@ type BlockAssets struct {
 // For now, we only unpack resources for the `minecraft` namespace, but we
 // should expand this to other resource packs in the future.
 // NOTE: this function calls `rl.LoadTexture`, which requires an OpenGL context to be initialized. Do not call this until after `rl.InitWindow` has finished!
-func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath string) (*BlockAssets, error) {
+func UnpackAssetsFromJar(r *zip.Reader, blocksToUnpack []string) (*BlockAssets, error) {
 	assets := BlockAssets{
 		make(map[string]BlockState),
 		make(map[string]BlockModel),
-		make(map[string]rl.Texture2D),
+		make(map[string]string),
+		make(map[string]*zip.File),
 	}
 
 	targetMap := make(map[string]struct{})
@@ -34,19 +33,10 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 		targetMap[resourceName] = struct{}{}
 	}
 
-	r, err := zip.OpenReader(jarPath)
-	if err != nil {
-		return nil, err
-	}
-
-	defer r.Close()
-
 	fmt.Printf("files in archive: %d\n", len(r.File))
 
-	fileMap := make(map[string]*zip.File)
-
 	for _, file := range r.File {
-		fileMap[file.Name] = file
+		assets.FileMap[file.Name] = file
 	}
 
 	pendingModels := make(map[string]struct{})
@@ -63,20 +53,11 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 			continue
 		}
 
-		// If there is no namespace on the blockname, we assume the default of "minecraft"
-		resourceName := strings.Split(nextBlock, ":")
-		var namespace, blockName string
-		if len(resourceName) == 1 {
-			namespace = "minecraft"
-			blockName = resourceName[0]
-		} else {
-			namespace = resourceName[0]
-			blockName = resourceName[1]
-		}
+		namespace, blockName := DecodeResourceId(nextBlock)
 
 		filePath := fmt.Sprintf("assets/%s/blockstates/%s.json", namespace, blockName)
 
-		if file, ok := fileMap[filePath]; ok {
+		if file, ok := assets.FileMap[filePath]; ok {
 			rc, err := file.Open()
 			if err != nil {
 				return nil, err
@@ -154,7 +135,7 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 
 		filePath := fmt.Sprintf("assets/%s/models/%s.json", namespace, modelName)
 
-		if file, ok := fileMap[filePath]; ok {
+		if file, ok := assets.FileMap[filePath]; ok {
 			rc, err := file.Open()
 			if err != nil {
 				return nil, err
@@ -173,7 +154,7 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 
 			// Enqueue any textures we find
 			for _, texName := range model.Textures {
-				if !strings.HasPrefix(texName, "#") {
+				if !strings.HasPrefix(texName, "#") && texName != "minecraft:missingno" {
 					if _, ok := pendingTextures[texName]; !ok {
 						pendingTextures[texName] = struct{}{}
 					}
@@ -192,6 +173,8 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 	}
 
 	fmt.Printf("unpacked models: \n%+v\n", assets.Models)
+
+	fmt.Printf("pending texures: \n%+v\n", pendingTextures)
 
 	// Build the texture queue and unpack
 	textureQueue := []string{}
@@ -222,24 +205,8 @@ func UnpackAssetsFromJar(jarPath string, blocksToUnpack []string, destPath strin
 		// TODO: we assume for simplicity that the filetype is "png", and all minecraft textures are png. Do we need to support other image formats?
 		filePath := fmt.Sprintf("assets/%s/textures/%s.png", namespace, blockName)
 
-		if file, ok := fileMap[filePath]; ok {
-			// First, load the file data into memory. Then create a raylib image from that byte slice.
-
-			rc, err := file.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-
-			imageData, err := io.ReadAll(rc)
-			if err != nil {
-				return nil, err
-			}
-
-			rlImage := rl.LoadImageFromMemory(".png", imageData, int32(len(imageData)))
-
-			fmt.Printf("rlImage: %+v\n", rlImage)
-			assets.Textures[nextTexture] = rl.LoadTextureFromImage(rlImage)
+		if _, ok := assets.FileMap[filePath]; ok {
+			assets.Textures[nextTexture] = filePath
 		} else {
 			fmt.Printf("no resource \"%s\" found at path %s\n", nextTexture, filePath)
 		}

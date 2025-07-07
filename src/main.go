@@ -1,24 +1,22 @@
 package main
 
-/**
-
-TODO: textures extraction from an on-disk client.jar (default install locations and user-specified paths)
-TODO: performance comparison between loading individual texture images vs. using an atlas
-
-
-*/
-
 import (
+	"archive/zip"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/faideww/mc-iso/src/block"
+	"github.com/faideww/mc-iso/src/graphics"
 	"github.com/faideww/mc-iso/src/nbt"
 	"github.com/faideww/mc-iso/src/region"
 	rl "github.com/gen2brain/raylib-go/raylib"
+	"github.com/joho/godotenv"
 )
+
+const DEBUG_DRAW_AXIS = true
 
 type Level struct {
 	Data LevelData `nbt:"Data"`
@@ -50,16 +48,42 @@ type LevelData struct {
 	WasModded bool        `nbt:"WasModded"`
 }
 
-func main() {
-	args := os.Args
-
-	if len(args) < 2 {
-		log.Fatal("missing path to world dir")
+func loadEnv() {
+	env := os.Getenv("VISTAS_ENV")
+	if "" == env {
+		env = "development"
 	}
 
-	worldPath := args[1]
+	godotenv.Load(".env." + env + ".local")
+	if "test" != env {
+		godotenv.Load(".env.local")
+	}
+
+	godotenv.Load(".env." + env)
+	godotenv.Load() // plain old .env
+}
+
+func main() {
+	loadEnv()
+
+	jarPath := os.Getenv("MC_JAR_PATH")
+	worldPath := os.Getenv("WORLD_PATH")
+
+	if "" == jarPath {
+		panic(errors.New("No jar path provided (MC_JAR_PATH)"))
+	}
+
+	// Prefer to load world path from command line arguments, if it's provided
+	if len(os.Args) > 1 {
+		worldPath = os.Args[1]
+	}
+
+	if "" == worldPath {
+		panic(errors.New("No world  provided (WORLD_PATH)"))
+	}
 
 	fmt.Printf("worldPath: %s\n", worldPath)
+	fmt.Printf("jarPath: %s\n", jarPath)
 
 	levelDatPath := filepath.Join(worldPath, "level.dat")
 
@@ -99,103 +123,166 @@ func main() {
 	fmt.Printf("successfully parsed region\n")
 	// fmt.Printf("example chunk 0: %+v\n", region.Chunks[0])
 
-	for i, s := range reg.Chunks[0].Sections {
+	chunk := reg.Chunks[1]
+	for i, s := range chunk.Sections {
 		fmt.Printf("section %d Y: %d\n", i, s.Y)
 	}
 
-	debugPrintChunkSection(reg.Chunks[0].Sections[0])
+	// DEBUG: focus on a single section for now
+	// TODO:  eventually we will need to account for all sections and all chunks
 
-	tmpdir, err := os.MkdirTemp("", "mc-iso-assets")
+	debugPrintChunkSection(chunk.Sections[0])
+
+	blocksToUnpack := []string{}
+	for _, s := range chunk.Sections {
+		for _, block := range s.BlockStates.Palette {
+			blocksToUnpack = append(blocksToUnpack, block.Name)
+		}
+	}
+
+	log.Printf("blcocks to unpack: %+v\n", blocksToUnpack)
+	log.Printf("unpacking assets from jar...\n")
+
+	jarReader, err := zip.OpenReader(jarPath)
 	if err != nil {
+		log.Printf("failed to open jar reader.\n")
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmpdir)
 
-	screenWidth := int32(800)
-	screenHeight := int32(450)
+	defer jarReader.Close()
 
+	assets, err := block.UnpackAssetsFromJar(&jarReader.Reader, blocksToUnpack)
+
+	if err != nil {
+		log.Printf("failed to unpack assets.\n")
+		log.Fatal(err)
+	}
+	log.Printf("unpacking complete.\n")
+
+	log.Printf("building texture atlas...\n")
+
+	screenWidth := int32(1920)
+	screenHeight := int32(1080)
+	// InitWindow *must* be called before textures are loaded
 	rl.InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window")
 	defer rl.CloseWindow()
 
-	assets, err := block.UnpackAssetsFromJar("/Users/faide/Library/Application Support/minecraft/versions/1.21.4/1.21.4.jar", []string{"minecraft:bedrock"}, tmpdir)
+	textureAtlas, err := graphics.LoadTextureAtlas(assets.FileMap, assets.Textures, 16)
 	if err != nil {
+		log.Printf("failed to build atlas.\n")
 		log.Fatal(err)
 	}
 
-	rl.SetTargetFPS(60)
+	log.Printf("atlas built.\n")
+	fmt.Printf("atlas uv map: %+v\n", textureAtlas.UVMap)
+
+	log.Printf("initing renderer...\n")
+
+	rl.SetTargetFPS(144)
 
 	camera := rl.Camera{
-		Position:   rl.Vector3{X: -10, Y: 10, Z: -10},
+		Position:   rl.Vector3{X: 100, Y: 100, Z: 100},
 		Target:     rl.Vector3{X: 0, Y: 0, Z: 0},
 		Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
-		Fovy:       10.0,
+		Fovy:       64.0,
 		Projection: rl.CameraOrthographic,
 	}
-	orientationHintTex := rl.LoadRenderTexture(50, 50)
-	rl.BeginTextureMode(orientationHintTex)
-	rl.ClearBackground(rl.Black)
-	rl.EndTextureMode()
 
-	var prevMouseRay rl.Ray
+	// DEBUG
+	// TODO: build a test section for debugging
+	// testSection := []graphics.Block{
+	// 	{
+	// 		Pos: rl.NewVector3(0, 0, 0),
+	// 		Faces: [6]graphics.BlockFaceTexture{
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(1, 0, 0)},  // east
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(-1, 0, 0)}, // west
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 1, 0)},  // up
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, -1, 0)}, // down
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 0, -1)}, // north
+	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 0, 1)},  // south
+	// 		},
+	// 	},
+	// }
 
+	models := make([]*rl.Model, len(chunk.Sections))
+	for i, s := range chunk.Sections {
+		model := graphics.BuildSectionMesh(&textureAtlas, &s)
+		models[i] = model
+		defer rl.UnloadModel(*model)
+		defer graphics.ClearMesh(*model)
+
+	}
+
+	rl.DisableCursor()
+	// orientationHintTex := rl.LoadRenderTexture(50, 50)
 	for !rl.WindowShouldClose() {
-		// Update mouse
-		if rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
-			prevMouseRay = rl.GetMouseRay(rl.GetMousePosition(), camera)
-		} else if rl.IsMouseButtonDown(rl.MouseButtonLeft) {
-			currMouseRay := rl.GetMouseRay(rl.GetMousePosition(), camera)
-			rayDiff := rl.Vector3Subtract(currMouseRay.Position, prevMouseRay.Position)
-			if rayDiff.X != 0 || rayDiff.Y != 0 || rayDiff.Z != 0 {
-				fmt.Printf("mouse moved world (X:%0.2f, Y:%0.2f, Z:%0.2f)\n", rayDiff.X, rayDiff.Y, rayDiff.Z)
-
-				camera.Position = rl.Vector3Subtract(camera.Position, rayDiff)
-				camera.Target = rl.Vector3Subtract(camera.Target, rayDiff)
-
-			}
-			prevMouseRay = currMouseRay
-		}
+		rl.UpdateCamera(&camera, rl.CameraThirdPerson)
 
 		rl.BeginDrawing()
+
 		rl.ClearBackground(rl.Black)
 		rl.BeginMode3D(camera)
-		rl.DrawGrid(10, 1)
-		rl.DrawTexture(assets.Textures["minecraft:block/bedrock"], 0, 0, rl.White)
-		// render.RenderCube(-100, 0, 0, rl.Yellow)
-		// render.RenderCube(1, 0, 0, rl.Red)
-		// render.RenderCube(1, 0, 1, rl.Green)
-		// render.RenderCube(0, 0, 1, rl.Blue)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 1, Y: 0, Z: 0}, rl.Red)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 1, Z: 0}, rl.Green)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 0, Z: 1}, rl.Blue)
 
-		rl.EndMode3D()
+		// rl.DrawGrid(16, 1)
 
-		cameraRay := rl.GetCameraForward(&camera)
-		vecOrigin := rl.Vector3{}
-
-		rl.BeginTextureMode(orientationHintTex)
-
-		axisCamera := rl.Camera{
-			Position:   rl.Vector3Subtract(vecOrigin, cameraRay),
-			Target:     vecOrigin,
-			Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
-			Fovy:       2.0,
-			Projection: rl.CameraOrthographic,
+		for i, model := range models {
+			sectionY := chunk.Sections[i].Y * 16
+			rl.DrawModelEx(*model, rl.NewVector3(0, float32(sectionY), 0), rl.NewVector3(0, 1, 0), 0, rl.NewVector3(1, 1, 1), rl.White)
 		}
+		// graphics.DrawBlocksImmediate(&camera, &textureAtlas, blocksToDraw)
 
-		rl.BeginMode3D(axisCamera)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 1, Y: 0, Z: 0}, rl.Red)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 1, Z: 0}, rl.Green)
-		rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 0, Z: 1}, rl.Blue)
+		if DEBUG_DRAW_AXIS {
+			// Draw axis gizmo with depth testing disabled so that it always appears on top
+			rl.DrawRenderBatchActive()
+			rl.DisableDepthTest()
+			drawAxisGizmo()
+			rl.DrawRenderBatchActive()
+			rl.EnableDepthTest()
+		}
 		rl.EndMode3D()
-		rl.EndTextureMode()
+		// rl.DrawRenderBatchActive()
 
-		rl.DrawTextureRec(orientationHintTex.Texture, rl.NewRectangle(0, 0, 50, -50),
-			rl.NewVector2(float32(screenWidth)-50, 0), rl.White)
+		// rl.BeginMode3D(camera)
+		// rl.EndMode3D()
+		// rl.DrawRenderBatchActive()
+
+		// cameraRay := rl.GetCameraForward(&camera)
+		// vecOrigin := rl.Vector3{}
+
+		// rl.BeginTextureMode(orientationHintTex)
+
+		// axisCamera := rl.Camera{
+		// 	Position:   rl.Vector3Subtract(vecOrigin, cameraRay),
+		// 	Target:     vecOrigin,
+		// 	Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
+		// 	Fovy:       2.0,
+		// 	Projection: rl.CameraOrthographic,
+		// }
+
+		// rl.BeginMode3D(axisCamera)
+		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 1, Y: 0, Z: 0}, rl.Red)
+		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 1, Z: 0}, rl.Green)
+		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 0, Z: 1}, rl.Blue)
+		// rl.EndMode3D()
+		// rl.EndTextureMode()
+
+		// rl.DrawTextureRec(orientationHintTex.Texture, rl.NewRectangle(0, 0, 50, -50),
+		// 	rl.NewVector2(float32(screenWidth)-50, 0), rl.White)
+
+		// rl.EndMode3D()
 
 		rl.DrawFPS(10, 10)
 		rl.EndDrawing()
 	}
+}
+
+func drawAxisGizmo() {
+	const L = 2.0 // axis length in world units
+	rl.PushMatrix()
+	rl.DrawLine3D(rl.Vector3Zero(), rl.NewVector3(L, 0, 0), rl.Red)
+	rl.DrawLine3D(rl.Vector3Zero(), rl.NewVector3(0, L, 0), rl.Green)
+	rl.DrawLine3D(rl.Vector3Zero(), rl.NewVector3(0, 0, L), rl.Blue)
+	rl.PopMatrix()
 }
 
 func debugPrintChunkSection(s region.Section) {
@@ -203,20 +290,21 @@ func debugPrintChunkSection(s region.Section) {
 	fmt.Printf("biome palette (size:%d): %+v\n", len(s.Biomes.Palette), s.Biomes.Palette)
 	fmt.Printf("block palette (size:%d): %+v\n", len(s.BlockStates.Palette), s.BlockStates.Palette)
 	fmt.Printf("block data size:%d\n", len(s.BlockStates.Data))
-	if region.IntPow(2, 4) > len(s.BlockStates.Palette) {
-		fmt.Printf("index size: 4bit - %d bytes\n", (4*4096)/8)
-	}
+	fmt.Printf("index size: %dbit\n", s.BlockStates.IndexSize)
+	// if region.IntPow(2, 4) > len(s.BlockStates.Palette) {
+	// 	fmt.Printf("index size: 4bit - %d bytes\n", (4*4096)/8)
+	// }
 
-	fmt.Printf("palette indices: [ ")
-	for i := 0; i < 4096; i++ {
-		idx, err := s.BlockStates.Index(i, true)
-		if err != nil {
-			log.Fatal(err)
-		}
-		block := s.BlockStates.Palette[idx].Name
-		fmt.Printf("%s ", block)
-	}
-	fmt.Printf("]\n")
+	// fmt.Printf("palette indices: [ ")
+	// for i := 0; i < 4096; i++ {
+	// 	idx, err := s.BlockStates.Index(i, true)
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	block := s.BlockStates.Palette[idx].Name
+	// 	fmt.Printf("%s (%d) ", block, idx)
+	// }
+	// fmt.Printf("]\n")
 
 	// fmt.Printf("palette data (size:%d elems, %d bytes): %+v\n", len(s.BlockStates.Data), len(s.BlockStates.Data)*8, s.BlockStates.Data)
 }
