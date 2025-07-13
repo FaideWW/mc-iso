@@ -2,3 +2,7 @@
 raylib.dll
 .env*
 main.exe
+
+# test output files
+model_dump.txt
+atlas.png

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"errors"
 	"fmt"
 	"log"
@@ -123,15 +124,12 @@ func main() {
 	fmt.Printf("successfully parsed region\n")
 	// fmt.Printf("example chunk 0: %+v\n", region.Chunks[0])
 
+	// TODO: for testing and debugging purposes, we isolate a single chunk to decode and render
+
 	chunk := reg.Chunks[1]
 	for i, s := range chunk.Sections {
 		fmt.Printf("section %d Y: %d\n", i, s.Y)
 	}
-
-	// DEBUG: focus on a single section for now
-	// TODO:  eventually we will need to account for all sections and all chunks
-
-	debugPrintChunkSection(chunk.Sections[0])
 
 	blocksToUnpack := []string{}
 	for _, s := range chunk.Sections {
@@ -140,7 +138,7 @@ func main() {
 		}
 	}
 
-	log.Printf("blcocks to unpack: %+v\n", blocksToUnpack)
+	log.Printf("blocks to unpack: %+v\n", blocksToUnpack)
 	log.Printf("unpacking assets from jar...\n")
 
 	jarReader, err := zip.OpenReader(jarPath)
@@ -159,14 +157,13 @@ func main() {
 	}
 	log.Printf("unpacking complete.\n")
 
-	log.Printf("building texture atlas...\n")
-
 	screenWidth := int32(1920)
 	screenHeight := int32(1080)
 	// InitWindow *must* be called before textures are loaded
 	rl.InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window")
 	defer rl.CloseWindow()
 
+	log.Printf("building texture atlas...\n")
 	textureAtlas, err := graphics.LoadTextureAtlas(assets.FileMap, assets.Textures, 16)
 	if err != nil {
 		log.Printf("failed to build atlas.\n")
@@ -176,6 +173,11 @@ func main() {
 	log.Printf("atlas built.\n")
 	fmt.Printf("atlas uv map: %+v\n", textureAtlas.UVMap)
 
+	log.Printf("baking models... ")
+	// TODO: capture this return
+	bakedModels := graphics.BakeBlockModels(&textureAtlas, assets)
+	log.Printf("done.\n")
+
 	log.Printf("initing renderer...\n")
 
 	rl.SetTargetFPS(144)
@@ -184,37 +186,34 @@ func main() {
 		Position:   rl.Vector3{X: 100, Y: 100, Z: 100},
 		Target:     rl.Vector3{X: 0, Y: 0, Z: 0},
 		Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
-		Fovy:       64.0,
+		Fovy:       16.0,
 		Projection: rl.CameraOrthographic,
 	}
 
-	// DEBUG
-	// TODO: build a test section for debugging
-	// testSection := []graphics.Block{
-	// 	{
-	// 		Pos: rl.NewVector3(0, 0, 0),
-	// 		Faces: [6]graphics.BlockFaceTexture{
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(1, 0, 0)},  // east
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(-1, 0, 0)}, // west
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 1, 0)},  // up
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, -1, 0)}, // down
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 0, -1)}, // north
-	// 			{TexId: "minecraft:block/bedrock", Uv: rl.NewRectangle(0.0, 0.0, 1.0, 1.0), Normal: rl.NewVector3(0, 0, 1)},  // south
-	// 		},
-	// 	},
-	// }
-
-	models := make([]*rl.Model, len(chunk.Sections))
-	for i, s := range chunk.Sections {
-		model := graphics.BuildSectionMesh(&textureAtlas, &s)
-		models[i] = model
-		defer rl.UnloadModel(*model)
-		defer graphics.ClearMesh(*model)
-
+	renderCtx := graphics.RenderContext{
+		Assets:       assets,
+		BakedModels:  bakedModels,
+		TextureAtlas: &textureAtlas,
 	}
 
+	models := make([]*rl.Model, len(chunk.Sections))
+
+	model := graphics.BuildSectionMeshFromBakedModels(&renderCtx, &chunk.Sections[0])
+	models[0] = model
+	defer rl.UnloadModel(*model)
+	defer graphics.ClearMesh(*model)
+
+	// for i, section := range chunk.Sections {
+	// 	model := graphics.BuildSectionMeshFromBakedModels(&renderCtx, &section)
+	// 	models[i] = model
+	// 	defer rl.UnloadModel(*model)
+	// 	defer graphics.ClearMesh(*model)
+	// }
+
+	debugPrintChunkSection(chunk.Sections[0])
+	dumpBakedModels(bakedModels)
+
 	rl.DisableCursor()
-	// orientationHintTex := rl.LoadRenderTexture(50, 50)
 	for !rl.WindowShouldClose() {
 		rl.UpdateCamera(&camera, rl.CameraThirdPerson)
 
@@ -225,11 +224,13 @@ func main() {
 
 		// rl.DrawGrid(16, 1)
 
-		for i, model := range models {
-			sectionY := chunk.Sections[i].Y * 16
-			rl.DrawModelEx(*model, rl.NewVector3(0, float32(sectionY), 0), rl.NewVector3(0, 1, 0), 0, rl.NewVector3(1, 1, 1), rl.White)
-		}
-		// graphics.DrawBlocksImmediate(&camera, &textureAtlas, blocksToDraw)
+		sectionY := 0 // chunk.Sections[0].Y * 16
+		rl.DrawModelEx(*model, rl.NewVector3(0, float32(sectionY), 0), rl.NewVector3(0, 1, 0), 0, rl.NewVector3(1, 1, 1), rl.White)
+
+		// for i, model := range models {
+		// 	sectionY := chunk.Sections[i].Y * 16
+		// 	rl.DrawModelEx(*model, rl.NewVector3(0, float32(sectionY), 0), rl.NewVector3(0, 1, 0), 0, rl.NewVector3(1, 1, 1), rl.White)
+		// }
 
 		if DEBUG_DRAW_AXIS {
 			// Draw axis gizmo with depth testing disabled so that it always appears on top
@@ -240,36 +241,6 @@ func main() {
 			rl.EnableDepthTest()
 		}
 		rl.EndMode3D()
-		// rl.DrawRenderBatchActive()
-
-		// rl.BeginMode3D(camera)
-		// rl.EndMode3D()
-		// rl.DrawRenderBatchActive()
-
-		// cameraRay := rl.GetCameraForward(&camera)
-		// vecOrigin := rl.Vector3{}
-
-		// rl.BeginTextureMode(orientationHintTex)
-
-		// axisCamera := rl.Camera{
-		// 	Position:   rl.Vector3Subtract(vecOrigin, cameraRay),
-		// 	Target:     vecOrigin,
-		// 	Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
-		// 	Fovy:       2.0,
-		// 	Projection: rl.CameraOrthographic,
-		// }
-
-		// rl.BeginMode3D(axisCamera)
-		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 1, Y: 0, Z: 0}, rl.Red)
-		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 1, Z: 0}, rl.Green)
-		// rl.DrawLine3D(rl.Vector3{X: 0, Y: 0, Z: 0}, rl.Vector3{X: 0, Y: 0, Z: 1}, rl.Blue)
-		// rl.EndMode3D()
-		// rl.EndTextureMode()
-
-		// rl.DrawTextureRec(orientationHintTex.Texture, rl.NewRectangle(0, 0, 50, -50),
-		// 	rl.NewVector2(float32(screenWidth)-50, 0), rl.White)
-
-		// rl.EndMode3D()
 
 		rl.DrawFPS(10, 10)
 		rl.EndDrawing()
@@ -285,12 +256,29 @@ func drawAxisGizmo() {
 	rl.PopMatrix()
 }
 
+func dumpBakedModels(modelMap graphics.ModelMap) {
+	f, err := os.Create("model_dump.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	for resourceId, model := range modelMap {
+		str := fmt.Sprintf("%s: %+v\n", resourceId, model)
+		w.WriteString(str)
+	}
+	w.Flush()
+}
+
 func debugPrintChunkSection(s region.Section) {
 	fmt.Printf("section Y: %d\n", s.Y)
 	fmt.Printf("biome palette (size:%d): %+v\n", len(s.Biomes.Palette), s.Biomes.Palette)
 	fmt.Printf("block palette (size:%d): %+v\n", len(s.BlockStates.Palette), s.BlockStates.Palette)
 	fmt.Printf("block data size:%d\n", len(s.BlockStates.Data))
 	fmt.Printf("index size: %dbit\n", s.BlockStates.IndexSize)
+	fmt.Printf("air index: %d\n", s.BlockStates.AirIdx)
 	// if region.IntPow(2, 4) > len(s.BlockStates.Palette) {
 	// 	fmt.Printf("index size: 4bit - %d bytes\n", (4*4096)/8)
 	// }

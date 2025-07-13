@@ -28,7 +28,7 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 
 	uvs := make(map[string]rl.Rectangle)
 
-	texIndex := 0
+	texIndex := 1 // texture at 0,0 will be used as a "missing texture" value
 	for texId, path := range texPaths {
 		if file, ok := fileMap[path]; ok {
 			rc, err := file.Open()
@@ -68,7 +68,7 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 
 		texIndex++
 	}
-	rl.ExportImage(*atlasImg, "test.png")
+	rl.ExportImage(*atlasImg, "atlas.png")
 	texture := rl.LoadTextureFromImage(atlasImg)
 
 	return TextureAtlas{texture, uvs, tileSize}, nil

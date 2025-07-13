@@ -20,6 +20,163 @@ type FaceDef struct {
 	Corners [4][3]int8 // offsets in model space from 0-1
 }
 
+func getNeighborCullingData(ctx *RenderContext, section *region.Section, nx, ny, nz int) (uint8, RenderType) {
+	if model, ok := ctx.GetBakedModelAt(section, nx, ny, nz); ok {
+		return model.FaceCullingMask, model.RenderType
+	}
+
+	return 0, RTAir
+}
+
+func getNeighborCoords(x, y, z int, face FaceDir) (int, int, int) {
+	switch face {
+	case FaceWest:
+		{
+			return x - 1, y, z
+		}
+	case FaceEast:
+		{
+			return x + 1, y, z
+		}
+	case FaceNorth:
+		{
+			return x, y, z - 1
+		}
+	case FaceSouth:
+		{
+			return x, y, z + 1
+		}
+	case FaceDown:
+		{
+			return x, y - 1, z
+		}
+	case FaceUp:
+		{
+			return x, y + 1, z
+		}
+	}
+
+	return x, y, z
+}
+
+func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section) *rl.Model {
+	const maxFaces = 16 * 16 * 16 * 6
+	const maxVerts = maxFaces * 4
+	const maxIndices = maxFaces * 6
+
+	// Allocate data slices
+	verts := make([]float32, 0, maxVerts*3)
+	texcoords := make([]float32, 0, maxVerts*2)
+	normals := make([]float32, 0, maxVerts*3)
+	indices := make([]uint16, 0, maxIndices)
+
+	pushQuad := func(
+		x, y, z float32, // world-space transform
+		f BakedFace, // face verts and uv
+	) {
+		baseIndex := uint16(len(verts) / 3)
+
+		// append vertex, uv, and normal data
+		for i := 0; i < 4; i++ {
+			cx := x + f.Vertices[i].X
+			cy := y + f.Vertices[i].Y
+			cz := z + f.Vertices[i].Z
+			verts = append(verts, cx, cy, cz)
+			texcoords = append(texcoords, f.Uv[i].X, f.Uv[i].Y)
+			normals = append(normals, f.Normal.X, f.Normal.Y, f.Normal.Z)
+		}
+
+		// append two tris to the indices
+		indices = append(indices,
+			baseIndex, baseIndex+1, baseIndex+2,
+			baseIndex, baseIndex+2, baseIndex+3)
+	}
+
+	// Sweep each block in the region
+	for y := 0; y < 16; y++ {
+		for z := 0; z < 16; z++ {
+			for x := 0; x < 16; x++ {
+				model, ok := ctx.GetBakedModelAt(section, x, y, z)
+				// ok will be false if the block is air, or if no model was found
+				if !ok {
+					fmt.Printf("block at %d,%d,%d is air or missing\n", x, y, z)
+					continue
+				}
+
+				renderType := model.RenderType
+
+				for _, face := range model.Faces {
+					// pushQuad(float32(x), float32(y), float32(z), face)
+					// continue
+
+					if face.Cullface == -1 {
+						// if cullface is -1, we always render the face
+						pushQuad(float32(x), float32(y), float32(z), face)
+						continue
+					}
+
+					nx, ny, nz := getNeighborCoords(x, y, z, face.Cullface)
+
+					neighborMask, neighborRenderType := getNeighborCullingData(ctx, section, nx, ny, nz)
+					neighborFace := getOpposingFace(face.Cullface)
+
+					neighborCoversFace := (neighborMask & (1 << neighborFace)) != 0
+
+					// If the neighboring face doesn't completely cover the current face, we draw it
+					if !neighborCoversFace {
+						pushQuad(float32(x), float32(y), float32(z), face)
+						continue
+					}
+
+					// Otherwise, we test the neighbor's render type
+					shouldCull := false
+					if neighborRenderType == RTOpaque {
+						shouldCull = true
+					} else if neighborRenderType == renderType {
+						// Matching render types cull each other (TODO: confirm this is true)
+						shouldCull = true
+					}
+
+					if !shouldCull {
+						pushQuad(float32(x), float32(y), float32(z), face)
+					}
+				}
+			}
+		}
+	}
+	// Marshal into rl.Mesh
+	mesh := rl.Mesh{}
+	mesh.VertexCount = int32(len(verts) / 3)
+	mesh.TriangleCount = int32(len(indices) / 3)
+
+	fmt.Printf("[Mesher] mesh stats: Vertices=%d, Triangles=%d\n", mesh.VertexCount, mesh.TriangleCount)
+
+	mesh.Vertices = unsafe.SliceData(verts)
+	mesh.Texcoords = unsafe.SliceData(texcoords)
+	mesh.Normals = unsafe.SliceData(normals)
+	mesh.Indices = unsafe.SliceData(indices)
+
+	rl.UploadMesh(&mesh, false) // Static draw
+
+	model := rl.LoadModelFromMesh(mesh)
+	model.GetMaterials()[0].GetMap(rl.MapDiffuse).Texture = ctx.TextureAtlas.Atlas
+
+	return &model
+}
+
+func ClearMesh(model rl.Model) {
+	// Vertices, Normals and Texcoords of your CUSTOM mesh are Go slices.
+	// UnloadModel calls UnloadMesh for every mesh and UnloadMesh tries
+	// to free your Go slices. This will panic because it cannot free
+	// Go slices. Free() is a C function and it expects to free C memory
+	// and not a Go slice. So clear the slices manually like this.
+	model.Meshes.Vertices = nil
+	model.Meshes.Normals = nil
+	model.Meshes.Texcoords = nil
+}
+
+// --- Older code begins here ---
+
 // Hard-coded cube faces
 var faces = [...]FaceDef{
 	/* -X (west) */ {rl.NewVector3(-1, 0, 0), [4][3]int8{{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 0}}},
@@ -164,22 +321,4 @@ func BuildSectionMesh(atlas *TextureAtlas, section *region.Section) *rl.Model {
 	model.GetMaterials()[0].GetMap(rl.MapDiffuse).Texture = atlas.Atlas
 
 	return &model
-}
-
-func appendCoord(slice []float32, values ...float32) []float32 {
-	for _, value := range values {
-		slice = append(slice, value)
-	}
-	return slice
-}
-
-func ClearMesh(model rl.Model) {
-	// Vertices, Normals and Texcoords of your CUSTOM mesh are Go slices.
-	// UnloadModel calls UnloadMesh for every mesh and UnloadMesh tries
-	// to free your Go slices. This will panic because it cannot free
-	// Go slices. Free() is a C function and it expects to free C memory
-	// and not a Go slice. So clear the slices manually like this.
-	model.Meshes.Vertices = nil
-	model.Meshes.Normals = nil
-	model.Meshes.Texcoords = nil
 }

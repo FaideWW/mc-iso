@@ -102,6 +102,18 @@ func (p Palette[T]) Index(i int, useNewPacking bool) (int64, error) {
 	return result, nil
 }
 
+func (p *Palette[T]) PaletteEntryByIndex(i int, useNewPacking bool) (T, error) {
+	var nilOut T
+	paletteId, err := p.Index(i, useNewPacking)
+	if err != nil {
+		return nilOut, err
+	}
+
+	paletteEntry := p.Palette[paletteId]
+
+	return paletteEntry, nil
+}
+
 // Given an integer i, returns the smallest number of bits that can represent i.
 func bitSize(i int) int {
 	// increment exp until 2^exp is greater than i

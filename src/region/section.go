@@ -1,7 +1,6 @@
 package region
 
 import (
-	// "fmt"
 	"log"
 )
 
@@ -39,8 +38,15 @@ func (s *Section) GetPaletteIdx(x, y, z int) (int64, error) {
 	// Blocks are ordered YZX, for compression purposes
 	blockIndex := y*16*16 + z*16 + x
 	idx, err := s.BlockStates.Index(blockIndex, true)
-	// fmt.Printf("(%d) ", idx)
 	return idx, err
+}
+
+func (s *Section) PaletteLookup(x, y, z int) (PaletteData, error) {
+	idx, err := s.GetPaletteIdx(x, y, z)
+	if err != nil {
+		return PaletteData{}, err
+	}
+	return s.BlockStates.Palette[idx], nil
 }
 
 // Tests whether a block can't be seen through (ie. a block behind it cannot be seen from in front, or can't be affected by a light source placed in front)
