@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +12,7 @@ import (
 	"github.com/faideww/mc-iso/src/graphics"
 	"github.com/faideww/mc-iso/src/nbt"
 	"github.com/faideww/mc-iso/src/region"
+	"github.com/faideww/mc-iso/src/util"
 	rl "github.com/gen2brain/raylib-go/raylib"
 	"github.com/joho/godotenv"
 )
@@ -174,8 +174,7 @@ func main() {
 	fmt.Printf("atlas uv map: %+v\n", textureAtlas.UVMap)
 
 	log.Printf("baking models... ")
-	// TODO: capture this return
-	bakedModels := graphics.BakeBlockModels(&textureAtlas, assets)
+	bakedBlockStates := graphics.BakeBlockStates(&textureAtlas, assets)
 	log.Printf("done.\n")
 
 	log.Printf("initing renderer...\n")
@@ -191,14 +190,15 @@ func main() {
 	}
 
 	renderCtx := graphics.RenderContext{
-		Assets:       assets,
-		BakedModels:  bakedModels,
-		TextureAtlas: &textureAtlas,
+		Assets:           assets,
+		BakedBlockStates: bakedBlockStates,
+		TextureAtlas:     &textureAtlas,
+		Random:           util.NewRandomSource(0),
 	}
 
 	models := make([]*rl.Model, len(chunk.Sections))
 
-	model := graphics.BuildSectionMeshFromBakedModels(&renderCtx, &chunk.Sections[0])
+	model := graphics.BuildSectionMeshFromBakedModels(&renderCtx, &chunk.Sections[0], chunk.XPos, chunk.ZPos, chunk.YPos)
 	models[0] = model
 	defer rl.UnloadModel(*model)
 	defer graphics.ClearMesh(*model)
@@ -211,7 +211,7 @@ func main() {
 	// }
 
 	debugPrintChunkSection(chunk.Sections[0])
-	dumpBakedModels(bakedModels)
+	// dumpBakedModels(bakedModels)
 
 	rl.DisableCursor()
 	for !rl.WindowShouldClose() {
@@ -256,21 +256,21 @@ func drawAxisGizmo() {
 	rl.PopMatrix()
 }
 
-func dumpBakedModels(modelMap graphics.ModelMap) {
-	f, err := os.Create("model_dump.txt")
-	if err != nil {
-		log.Fatal(err)
-	}
+// func dumpBakedModels(modelMap graphics.ModelMap) {
+// 	f, err := os.Create("model_dump.txt")
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
 
-	defer f.Close()
+// 	defer f.Close()
 
-	w := bufio.NewWriter(f)
-	for resourceId, model := range modelMap {
-		str := fmt.Sprintf("%s: %+v\n", resourceId, model)
-		w.WriteString(str)
-	}
-	w.Flush()
-}
+// 	w := bufio.NewWriter(f)
+// 	for resourceId, model := range modelMap {
+// 		str := fmt.Sprintf("%s: %+v\n", resourceId, model)
+// 		w.WriteString(str)
+// 	}
+// 	w.Flush()
+// }
 
 func debugPrintChunkSection(s region.Section) {
 	fmt.Printf("section Y: %d\n", s.Y)

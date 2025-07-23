@@ -2,19 +2,27 @@ package graphics
 
 import (
 	"archive/zip"
+	"fmt"
 	"io"
 	"math"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
+type PixelData struct {
+	data   []rl.Color
+	width  int32
+	height int32
+}
+
 type TextureAtlas struct {
 	Atlas    rl.Texture2D
 	UVMap    map[string]rl.Rectangle
 	TileSize int
+
+	imageDataCache map[string]PixelData
 }
 
-// NOTE: for now, we are only loading block textures. This will probably expand to other
 func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, tileSize int) (TextureAtlas, error) {
 	count := len(texPaths)
 	// Approximation of a square atlas
@@ -27,6 +35,7 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 	defer rl.UnloadImage(atlasImg)
 
 	uvs := make(map[string]rl.Rectangle)
+	pixelDataCache := make(map[string]PixelData)
 
 	texIndex := 1 // texture at 0,0 will be used as a "missing texture" value
 	for texId, path := range texPaths {
@@ -46,6 +55,7 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 
 			if texImg.Width != int32(tileSize) || texImg.Height != int32(tileSize) {
 				// TODO: warn that loaded texture is not the expected size, and skip
+				fmt.Printf("[atlas] WARNING: loaded texture differs from expected tilesize (expected %dx%d, found %dx%d)\n", tileSize, tileSize, texImg.Width, texImg.Height)
 			} else {
 				x := (texIndex % tilesPerRow) * tileSize
 				y := (texIndex / tilesPerRow) * tileSize
@@ -59,7 +69,11 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 					destRect.Width/float32(atlasWidth),
 					destRect.Height/float32(atlasHeight),
 				)
+
 			}
+
+			colors := rl.LoadImageColors(texImg)
+			pixelDataCache[texId] = PixelData{colors, texImg.Width, texImg.Height}
 
 			rl.UnloadImage(texImg)
 		} else {
@@ -71,5 +85,5 @@ func LoadTextureAtlas(fileMap map[string]*zip.File, texPaths map[string]string, 
 	rl.ExportImage(*atlasImg, "atlas.png")
 	texture := rl.LoadTextureFromImage(atlasImg)
 
-	return TextureAtlas{texture, uvs, tileSize}, nil
+	return TextureAtlas{texture, uvs, tileSize, pixelDataCache}, nil
 }

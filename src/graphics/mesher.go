@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/faideww/mc-iso/src/block"
 	"github.com/faideww/mc-iso/src/region"
+	"github.com/faideww/mc-iso/src/util"
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
@@ -20,46 +20,56 @@ type FaceDef struct {
 	Corners [4][3]int8 // offsets in model space from 0-1
 }
 
-func getNeighborCullingData(ctx *RenderContext, section *region.Section, nx, ny, nz int) (uint8, RenderType) {
-	if model, ok := ctx.GetBakedModelAt(section, nx, ny, nz); ok {
-		return model.FaceCullingMask, model.RenderType
+func getNeighborCullingData(ctx *RenderContext, section *region.Section, pos *BlockPositionContext) (uint8, RenderType) {
+	if model, ok := ctx.ResolveVariantBlockModel(section, pos); ok {
+		return model.Model.FaceCullingMask, model.Model.RenderType
 	}
 
 	return 0, RTAir
 }
 
-func getNeighborCoords(x, y, z int, face FaceDir) (int, int, int) {
+func getNeighborCoords(pos *BlockPositionContext, face FaceDir) *BlockPositionContext {
+	nPos := &BlockPositionContext{
+		World: pos.World,
+		Local: pos.Local,
+	}
 	switch face {
 	case FaceWest:
 		{
-			return x - 1, y, z
+			nPos.Local.X--
+			nPos.World.X--
 		}
 	case FaceEast:
 		{
-			return x + 1, y, z
+			nPos.Local.X++
+			nPos.World.X++
 		}
 	case FaceNorth:
 		{
-			return x, y, z - 1
+			nPos.Local.Z--
+			nPos.World.Z--
 		}
 	case FaceSouth:
 		{
-			return x, y, z + 1
+			nPos.Local.Z++
+			nPos.World.Z++
 		}
 	case FaceDown:
 		{
-			return x, y - 1, z
+			nPos.Local.Y--
+			nPos.World.Y--
 		}
 	case FaceUp:
 		{
-			return x, y + 1, z
+			nPos.Local.Y++
+			nPos.World.Y++
 		}
 	}
 
-	return x, y, z
+	return nPos
 }
 
-func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section) *rl.Model {
+func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section, chunkX, chunkZ, chunkY int) *rl.Model {
 	const maxFaces = 16 * 16 * 16 * 6
 	const maxVerts = maxFaces * 4
 	const maxIndices = maxFaces * 6
@@ -96,12 +106,20 @@ func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section
 	for y := 0; y < 16; y++ {
 		for z := 0; z < 16; z++ {
 			for x := 0; x < 16; x++ {
-				model, ok := ctx.GetBakedModelAt(section, x, y, z)
+				pos := &BlockPositionContext{
+					World: util.IntVector3{X: chunkX*16 + x, Y: chunkY*16 + (int(section.Y) * 16) + y, Z: chunkZ*16 + z},
+					Local: util.IntVector3{X: x, Y: y, Z: z},
+				}
+				variantModel, ok := ctx.ResolveVariantBlockModel(section, pos)
 				// ok will be false if the block is air, or if no model was found
+				// TODO: should we distinguish between these two? one is clearly an
+				// error while the other is not
 				if !ok {
-					fmt.Printf("block at %d,%d,%d is air or missing\n", x, y, z)
+					fmt.Printf("variantModel was not found or is air for %d,%d,%d\n", pos.Local.X, pos.Local.Y, pos.Local.Z)
 					continue
 				}
+
+				model := variantModel.Model
 
 				renderType := model.RenderType
 
@@ -111,19 +129,20 @@ func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section
 
 					if face.Cullface == -1 {
 						// if cullface is -1, we always render the face
-						pushQuad(float32(x), float32(y), float32(z), face)
+						pushQuad(float32(pos.Local.X), float32(pos.Local.Y), float32(pos.Local.Z), face)
 						continue
 					}
 
-					nx, ny, nz := getNeighborCoords(x, y, z, face.Cullface)
+					nPos := getNeighborCoords(pos, face.Cullface)
 
-					neighborMask, neighborRenderType := getNeighborCullingData(ctx, section, nx, ny, nz)
+					neighborMask, neighborRenderType := getNeighborCullingData(ctx, section, nPos)
 					neighborFace := getOpposingFace(face.Cullface)
 
 					neighborCoversFace := (neighborMask & (1 << neighborFace)) != 0
 
 					// If the neighboring face doesn't completely cover the current face, we draw it
 					if !neighborCoversFace {
+						fmt.Printf("block %d,%d,%d variantModel=%s facequad=%+v uv=%+v\n", pos.Local.X, pos.Local.Y, pos.Local.Z, variantModel.ModelName, face.Vertices, face.Uv)
 						pushQuad(float32(x), float32(y), float32(z), face)
 						continue
 					}
@@ -138,7 +157,7 @@ func BuildSectionMeshFromBakedModels(ctx *RenderContext, section *region.Section
 					}
 
 					if !shouldCull {
-						pushQuad(float32(x), float32(y), float32(z), face)
+						pushQuad(float32(pos.Local.X), float32(pos.Local.Y), float32(pos.Local.Z), face)
 					}
 				}
 			}
@@ -216,109 +235,4 @@ func neighborMask(s *region.Section, x, y, z int) uint8 {
 		m |= 1 << 5
 	}
 	return m
-}
-
-func BuildSectionMesh(atlas *TextureAtlas, section *region.Section) *rl.Model {
-	// sections are 16x16x16 sub-chunks
-	const maxFaces = 16 * 16 * 16 * 6
-	const maxVerts = maxFaces * 4
-	const maxIndices = maxFaces * 6
-
-	// Allocate data slices
-	verts := make([]float32, 0, maxVerts*3)
-	texcoords := make([]float32, 0, maxVerts*2)
-	normals := make([]float32, 0, maxVerts*3)
-	indices := make([]uint16, 0, maxIndices)
-
-	// Appends block face data to the slices
-	pushQuad := func(
-		x, y, z int, // world-space transform
-		f *FaceDef,
-		uv rl.Rectangle, // atlas texcoords (already in 0-1 uv format)
-	) {
-
-		// Tex coords
-		u0 := uv.X
-		v0 := uv.Y
-		u1 := uv.X + uv.Width
-		v1 := uv.Y + uv.Height
-
-		uvs := [4][2]float32{{u0, v1}, {u1, v1}, {u1, v0}, {u0, v0}}
-
-		baseIndex := uint16(len(verts) / 3)
-
-		// append vertex, uv, and normal data
-		for i := 0; i < 4; i++ {
-			cx := float32(x + int(f.Corners[i][0]))
-			cy := float32(y + int(f.Corners[i][1]))
-			cz := float32(z + int(f.Corners[i][2]))
-			verts = append(verts, cx, cy, cz)
-			texcoords = append(texcoords, uvs[i][0], uvs[i][1])
-			normals = append(normals, f.Normal.X, f.Normal.Y, f.Normal.Z)
-		}
-
-		// append two tris to the indices
-		indices = append(indices,
-			baseIndex, baseIndex+1, baseIndex+2,
-			baseIndex, baseIndex+2, baseIndex+3)
-	}
-
-	// Sweep each block in the region
-	for y := 0; y < 16; y++ {
-		for z := 0; z < 16; z++ {
-			for x := 0; x < 16; x++ {
-				// Skip air blocks
-				paletteIndex, err := section.GetPaletteIdx(x, y, z)
-				if err != nil {
-					fmt.Println(err)
-					continue
-				}
-				// fmt.Printf("block at %d,%d,%d: %+v", x, y, z, paletteIndex)
-				if paletteIndex == section.BlockStates.AirIdx {
-					// fmt.Printf("(air)\n")
-					continue
-				}
-				blockResourceName := section.BlockStates.Palette[paletteIndex].Name
-				namespace, blockName := block.DecodeResourceId(blockResourceName)
-
-				blockTextureName := fmt.Sprintf("%s:block/%s", namespace, blockName)
-				// fmt.Printf("(%s) ", blockTextureName)
-
-				// TODO: accommodate block models with different textures per face
-				// TODO: accommodate sparse block models
-				uvRect := atlas.UVMap[blockTextureName]
-				// fmt.Printf("(uv: %v) ", uvRect)
-
-				// For each cardinal direction, emit a face quad if the neighboring block is empty (either at a section boundary, or if the neighbor is air
-				neighbors := neighborMask(section, x, y, z)
-				// fmt.Printf("(nb: %08b) ", neighbors)
-
-				// For each face, see if new geometry is needed
-				for f := 0; f < 6; f++ {
-					if neighbors&(1<<f) == 0 {
-						// If the neighbor is not opaque, add a quad
-						pushQuad(x, y, z, &faces[f], uvRect)
-					}
-				}
-				// fmt.Println()
-			}
-		}
-	}
-
-	// Marshal into rl.Mesh
-	mesh := rl.Mesh{}
-	mesh.VertexCount = int32(len(verts) / 3)
-	mesh.TriangleCount = int32(len(indices) / 3)
-
-	mesh.Vertices = unsafe.SliceData(verts)
-	mesh.Texcoords = unsafe.SliceData(texcoords)
-	mesh.Normals = unsafe.SliceData(normals)
-	mesh.Indices = unsafe.SliceData(indices)
-
-	rl.UploadMesh(&mesh, false) // Static draw
-
-	model := rl.LoadModelFromMesh(mesh)
-	model.GetMaterials()[0].GetMap(rl.MapDiffuse).Texture = atlas.Atlas
-
-	return &model
 }

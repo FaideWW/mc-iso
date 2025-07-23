@@ -9,7 +9,7 @@ type BlockStateVariantModel struct {
 	Model  string `json:"model"`
 	X      int    `json:"x"`
 	Y      int    `json:"y"`
-	Uv     bool   `json:"uv"`
+	Uvlock bool   `json:"uvlock"`
 	Weight int    `json:"weight"`
 }
 

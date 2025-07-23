@@ -3,7 +3,6 @@ package graphics
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math"
 
 	"github.com/faideww/mc-iso/src/block"
@@ -25,15 +24,6 @@ During the baking stage, we pre-compute the data needed to determine if a face c
 These two properties can be checked in the rendering stage to determine whether to draw the face or not.
 
 */
-
-type RenderType int
-
-const (
-	RTOpaque RenderType = iota
-	RTCutout
-	RTTranslucent
-	RTAir
-)
 
 type FaceDir int
 
@@ -60,7 +50,38 @@ type BakedModel struct {
 	FaceCullingMask uint8 // Which faces of this block are capable of culling?
 }
 
-type ModelMap map[string]BakedModel
+type BakedVariantModel struct {
+	Model *BakedModel
+
+	ModelName string
+	Weight    int
+	RotationX int
+	RotationY int
+	Uvlock    bool
+}
+
+type BakedVariant struct {
+	Models           []BakedVariantModel
+	IsWeightedChoice bool
+	TotalWeight      int
+}
+
+type BakedMultipartCase struct {
+	Condition block.MultipartCondition
+	Model     BakedVariant
+}
+
+type BakedBlockState struct {
+	// For blocks using "variants", we store each variant keyed by its property conditions (eg. "axis=y")
+	Variants map[string]BakedVariant
+	// For blocks using "multipart", we store the raw rules directly, as they must be evaluated at runtime
+	Multipart   []BakedMultipartCase
+	IsMultipart bool
+}
+
+type BakedBlockStateMap map[string]BakedBlockState
+
+// type ModelMap map[string]BakedModel
 
 var bakedModelCache map[string]BakedModel
 
@@ -73,6 +94,7 @@ var bakedModelCache map[string]BakedModel
 // the known blocks.
 // Refer to https://minecraft.wiki/w/Opacity for a complete list
 
+// var RenderTypeExceptionsTranslucent = []string{}
 var RenderTypeExceptionsTranslucent = []string{
 	// Full-block translucent types
 	"minecraft:block/barrier",
@@ -103,6 +125,7 @@ var RenderTypeExceptionsTranslucent = []string{
 	"minecraft:block/black_stained_glass",
 }
 
+// var RenderTypeExceptionsCutout = []string{}
 var RenderTypeExceptionsCutout = []string{
 	// Full-block cutout types
 	"minecraft:block/glass",
@@ -219,11 +242,32 @@ func getModelDescription(models map[string]block.BlockModel, modelId string) (bl
 	return resolvedDesc, nil
 }
 
+func resolveTextureVariable(initialKey string, textures map[string]string) (string, bool) {
+	currentKey := initialKey
+
+	// Safeguard to prevent us from looping infinitely in case of circular references
+	for i := 0; i < 10; i++ {
+		if len(currentKey) > 0 && currentKey[0] == '#' {
+			nextKey, ok := textures[currentKey[1:]]
+			if !ok {
+				return "", false
+			}
+
+			currentKey = nextKey
+		} else {
+			return currentKey, true
+		}
+	}
+	fmt.Printf("[baker] Warning: texture resolution reached the maximum lookup iterations for key '%s'; check for circular references.\n", initialKey)
+	return "", false
+}
+
 func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId string) (BakedModel, error) {
 	if cachedModel, ok := bakedModelCache[modelId]; ok {
 		return cachedModel, nil
 	}
 	var model BakedModel
+
 	modelDesc, err := getModelDescription(models, modelId)
 	if err != nil {
 		return model, errors.Join(fmt.Errorf("error getting model description"), err)
@@ -231,11 +275,14 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 
 	var faceCullingMask uint8 = 0
 
+	isOnRenderExceptionList := false
+
 	// Render type starts as OPAQUE, and based on various criteria can be demoted
 	// to CUTOUT and then to TRANSLUCENT
 	resolvedRenderType := RTOpaque
 	for _, exceptionId := range RenderTypeExceptionsCutout {
 		if modelId == exceptionId {
+			isOnRenderExceptionList = true
 			resolvedRenderType = RTCutout
 			break
 		}
@@ -243,6 +290,7 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 
 	for _, exceptionId := range RenderTypeExceptionsTranslucent {
 		if modelId == exceptionId {
+			isOnRenderExceptionList = true
 			resolvedRenderType = RTTranslucent
 			break
 		}
@@ -267,8 +315,8 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 		minP = rl.Vector3Scale(minP, 1.0/16)
 		maxP = rl.Vector3Scale(maxP, 1.0/16)
 
-		fmt.Printf("Baking element with bounds: minP=%+v, maxP=%+v\n", minP, maxP)
-		fmt.Printf("Original bounds: from=%+v, to=%+v\n", from, to)
+		// fmt.Printf("Baking element with bounds: minP=%+v, maxP=%+v\n", minP, maxP)
+		// fmt.Printf("Original bounds: from=%+v, to=%+v\n", from, to)
 
 		vertices := [8]rl.Vector3{
 			{X: minP.X, Y: minP.Y, Z: minP.Z},
@@ -281,25 +329,53 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 			{X: maxP.X, Y: maxP.Y, Z: maxP.Z},
 		}
 
+		fmt.Printf("[baker] model %s examining texture variables\n", modelId)
+		fmt.Printf("model textures=%s\n", modelDesc.Textures)
 		for faceDir, faceDesc := range element.Faces {
-			texId := modelDesc.Textures[faceDesc.Texture]
-			uvRect, ok := atlas.UVMap[texId]
-			if !ok {
-				var allOk bool
-				uvRect, allOk = atlas.UVMap[modelDesc.Textures["all"]]
-				if !allOk {
-					// If we don't find a texture, fallback to a missing texture value
-					uvRect = rl.Rectangle{
-						X:      0,
-						Y:      0,
-						Width:  float32(atlas.TileSize) / float32(atlas.Atlas.Width),
-						Height: float32(atlas.TileSize) / float32(atlas.Atlas.Height),
-					}
-					// return model, fmt.Errorf("model %s element %d face '%s' references unresolved texture variable %s", modelId, i, faceDir, faceDesc.Texture)
+
+			// First, try to resolve the face's declared texture
+			texId, texOk := resolveTextureVariable(faceDesc.Texture, modelDesc.Textures)
+			if !texOk {
+				// If we can't find it, try to fall back to #all instead
+				texId, texOk = resolveTextureVariable("#all", modelDesc.Textures)
+			}
+			fmt.Printf("texture key=%s (resolved=%s)\n", faceDesc.Texture, texId)
+
+			var uvRect rl.Rectangle
+			if texOk {
+				var ok bool
+				// Look up the texcoords in the atlas
+				uvRect, ok = atlas.UVMap[texId]
+				if !ok {
+					texOk = false
 				}
 			}
+			if !texOk {
+				// If texture variable resolution or texture lookup fails, fallback to
+				// the "missing texture" texture, found at the top left of the atlas
+				uvRect = rl.Rectangle{
+					X:      0,
+					Y:      0,
+					Width:  float32(atlas.TileSize) / float32(atlas.Atlas.Width),
+					Height: float32(atlas.TileSize) / float32(atlas.Atlas.Height),
+				}
 
-			// fmt.Printf("[textures] model %s face %s texture=%s (%s) uv=%+v\n", modelId, faceDir, faceDesc.Texture, texId, uvRect)
+			}
+
+			if faceDesc.Uv.X1 != 0 || faceDesc.Uv.X2 != 0 || faceDesc.Uv.Y1 != 0 || faceDesc.Uv.Y2 != 0 {
+				// If the face describes its own uv, map those into texture atlas space and use those instead of the default uv rect.
+				faceUvRect := rl.Rectangle{
+					X:      float32(faceDesc.Uv.X1) / 16.0,
+					Y:      float32(faceDesc.Uv.Y1) / 16.0,
+					Width:  float32(faceDesc.Uv.X2-faceDesc.Uv.X1) / 16.0,
+					Height: float32(faceDesc.Uv.Y2-faceDesc.Uv.Y1) / 16.0,
+				}
+
+				uvRect.X = uvRect.X + (faceUvRect.X * uvRect.Width)
+				uvRect.Y = uvRect.Y + (faceUvRect.Y * uvRect.Height)
+				uvRect.Width = uvRect.Width * faceUvRect.Width
+				uvRect.Height = uvRect.Height * faceUvRect.Height
+			}
 
 			faceIdx := faceDirectionToIndex(faceDir)
 			var quadVerts [4]rl.Vector3
@@ -320,9 +396,9 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 				quadVerts[i] = vertices[indices[i]]
 			}
 
-			fmt.Printf("[baker] faceDir=%s faceIdx=%d indices=%+v quadVerts=%+v\n", faceDir, faceIdx, indices, quadVerts)
+			// fmt.Printf("[baker] faceDir=%s faceIdx=%d indices=%+v quadVerts=%+v\n", faceDir, faceIdx, indices, quadVerts)
 
-			// TODO: Render type texture sampling. We need to test the alpha
+			// Render type texture sampling. We need to test the alpha
 			// channel of the face's texture rect, in order to determine whether
 			// the block's render type should be demoted from OPAQUE to CUTOUT or
 			// TRANSLUCENT.
@@ -330,6 +406,14 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 			//   block is demoted to CUTOUT
 			// - If the block is OPAQUE or CUTOUT and any texel has an alpha value
 			//   between 0 and 255, the block is demoted to TRANSLUCENT
+
+			if !isOnRenderExceptionList && resolvedRenderType != RTTranslucent {
+				computedRenderType := computeTextureRenderType(faceDesc.Uv, atlas.imageDataCache[texId])
+				// RenderTypes are defined in order from most strict to least strict. If we compute a "higher" (less strict) render type than the block's current render type, the block is demoted to that computed type.
+				if computedRenderType > resolvedRenderType {
+					resolvedRenderType = computedRenderType
+				}
+			}
 
 			// Face culling geometric test. Each face is tested for whether it
 			// completely covers the block opposite of it. If so, the face is added
@@ -392,6 +476,8 @@ func bakeModel(atlas *TextureAtlas, models map[string]block.BlockModel, modelId 
 
 	model.FaceCullingMask = faceCullingMask
 	model.RenderType = resolvedRenderType
+
+	// fmt.Printf("[baker] model %s resolved to rendertype=%d\n", modelId, resolvedRenderType)
 
 	bakedModelCache[modelId] = model
 
@@ -522,40 +608,85 @@ func findIndex(list [4]rl.Vector3, target rl.Vector3) int {
 }
 
 // Compiles the loaded blockstate assets into mesher-compatible models.
-// TODO: decide on a loading strategy - should we eagerly compile all blocks on
-// startup, or lazily generate them on-demand for a world file?
-func BakeBlockModels(atlas *TextureAtlas, assets *block.BlockAssets) ModelMap {
-	m := make(ModelMap)
+func BakeBlockStates(atlas *TextureAtlas, assets *block.BlockAssets) BakedBlockStateMap {
+	m := make(BakedBlockStateMap)
 	bakedModelCache = make(map[string]BakedModel)
 
-	for resourceId, blockState := range assets.BlockStates {
-		variantKey, variantState := mapPick(blockState.Variants)
-		if len(blockState.Variants) > 1 {
-			// TODO: variants are not yet supported. For not we will just pick one at random
-			log.Printf("[WARN] BlockState with resource id %s has multiple variants; we will pick one at random (%s).\n", resourceId, variantKey)
+	for resourceId, blockStateDesc := range assets.BlockStates {
+		blockState := BakedBlockState{}
+		if len(blockStateDesc.Multipart) > 0 {
+			// If the multipart field is present, this is a multipart block state
+			blockState.IsMultipart = true
+			// TODO: process multipart conditions
+		} else {
+			blockState.IsMultipart = false
+			variantMap := make(map[string]BakedVariant)
+			for variantKey, variantDesc := range blockStateDesc.Variants {
+				variant := BakedVariant{}
+				if len(variantDesc) > 1 {
+					// always true if there is more than one model, even if all variants
+					// are weight=1
+					variant.IsWeightedChoice = true
+				}
+				variant.Models = make([]BakedVariantModel, 0)
+				for _, modelDesc := range variantDesc {
+					modelWrapper := BakedVariantModel{
+						Weight:    1,
+						ModelName: modelDesc.Model,
+						RotationX: modelDesc.X,
+						RotationY: modelDesc.Y,
+						Uvlock:    modelDesc.Uvlock,
+					}
+
+					// NOTE: we assume that a weight of 0 means the value was unset and should be
+					// the default value, since a variant with 0 weight is meaningless. May need
+					// to correct this assumption based on testing
+					if modelDesc.Weight != 0 {
+						modelWrapper.Weight = modelDesc.Weight
+					}
+
+					bakedModel, err := bakeModel(atlas, assets.Models, modelDesc.Model)
+					if err != nil {
+						fmt.Printf("error baking model for blockstate %s (variant \"%s\"): %s\n", resourceId, variantKey, err)
+						continue
+					}
+					modelWrapper.Model = &bakedModel
+					variant.Models = append(variant.Models, modelWrapper)
+					variant.TotalWeight += modelWrapper.Weight
+				}
+
+				variantMap[variantKey] = variant
+			}
+			blockState.Variants = variantMap
 		}
+		m[resourceId] = blockState
+		// variantKey, variantState := mapPickFirst(blockState.Variants)
+		// if len(blockState.Variants) > 1 {
+		// 	// TODO: variants are not yet supported. For not we will just pick one at random
+		// 	log.Printf("[WARN] BlockState with resource id %s has multiple variants; we will pick one at random (%s).\n", resourceId, variantKey)
+		// }
 
-		if len(variantState) > 1 {
-			// TODO: when multiple models are specified, one should be chosen at random. for now, we will pick the first.
-			log.Printf("[WARN] BlockStateVariant %s-%s has multiple models; we will pick the first one.\n", resourceId, variantKey)
-		}
+		// if len(variantState) > 1 {
+		// 	// TODO: when multiple models are specified, one should be chosen at random. for now, we will pick the first.
+		// 	log.Printf("[WARN] BlockStateVariant %s-%s has multiple models; we will pick the first one.\n", resourceId, variantKey)
+		// }
 
-		variantModelDesc := variantState[0]
+		// variantModelDesc := variantState[0]
 
-		// TODO: for now, we are ignoring all variant properties as well (x,y,uv,weight)
+		// // TODO: for now, we are ignoring all variant properties as well (x,y,uv,weight)
 
-		blockModel, err := bakeModel(atlas, assets.Models, variantModelDesc.Model)
-		if err != nil {
-			fmt.Printf("error baking model for blockstate %s: %s\n", resourceId, err)
-		}
+		// blockModel, err := bakeModel(atlas, assets.Models, variantModelDesc.Model)
+		// if err != nil {
+		// 	fmt.Printf("error baking model for blockstate %s: %s\n", resourceId, err)
+		// }
 
-		m[variantModelDesc.Model] = blockModel
+		// m[variantModelDesc.Model] = blockModel
 	}
 
 	return m
 }
 
-func mapPick[K comparable, V any](m map[K]V) (K, V) {
+func mapPickFirst[K comparable, V any](m map[K]V) (K, V) {
 	var noKey K
 	var noVal V
 	for k, v := range m {
